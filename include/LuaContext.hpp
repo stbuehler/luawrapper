@@ -363,10 +363,10 @@ public:
      * @tparam TFunctionType    Pointer-to-member function type
      */
     template<typename TFunctionType, typename TType>
-    void registerFunction(const std::string& functionName, TType fn)
+    void registerFunction(const std::string& functionName, TType&& fn)
     {
         static_assert(std::is_member_function_pointer<TFunctionType>::value, "registerFunction must take a member function pointer type as template parameter");
-        registerFunctionImpl(functionName, std::move(fn), tag<TFunctionType>{});
+        registerFunctionImpl(functionName, std::forward<TType>(fn), tag<TFunctionType>{});
     }
 
     /**
@@ -377,10 +377,10 @@ public:
      * @tparam TFunctionType    Function type
      */
     template<typename TObject, typename TFunctionType, typename TType>
-    void registerFunction(const std::string& functionName, TType fn)
+    void registerFunction(const std::string& functionName, TType&& fn)
     {
         static_assert(std::is_function<TFunctionType>::value, "registerFunction must take a function type as template parameter");
-        registerFunctionImpl(functionName, std::move(fn), tag<TObject>{}, tag<TFunctionType>{});
+        registerFunctionImpl(functionName, std::forward<TType>(fn), tag<TObject>{}, tag<TFunctionType>{});
     }
 
     /**
@@ -429,9 +429,9 @@ public:
      * @param writeFunction  Function of type "void (TObject&, const TVarType&)"
      */
     template<typename TObject, typename TVarType, typename TReadFunction, typename TWriteFunction>
-    void registerMember(const std::string& name, TReadFunction readFunction, TWriteFunction writeFunction)
+    void registerMember(const std::string& name, TReadFunction&& readFunction, TWriteFunction&& writeFunction)
     {
-        registerMemberImpl<TObject,TVarType>(name, std::move(readFunction), std::move(writeFunction));
+        registerMemberImpl<TObject,TVarType>(name, std::forward<TReadFunction>(readFunction), std::forward<TWriteFunction>(writeFunction));
     }
 
     /**
@@ -443,10 +443,10 @@ public:
      * @param writeFunction  Function of type "void (TObject&, const TVarType&)"
      */
     template<typename TMemberType, typename TReadFunction, typename TWriteFunction>
-    void registerMember(const std::string& name, TReadFunction readFunction, TWriteFunction writeFunction)
+    void registerMember(const std::string& name, TReadFunction&& readFunction, TWriteFunction&& writeFunction)
     {
         static_assert(std::is_member_object_pointer<TMemberType>::value, "registerMember must take a member object pointer type as template parameter");
-        registerMemberImpl(tag<TMemberType>{}, name, std::move(readFunction), std::move(writeFunction));
+        registerMemberImpl(tag<TMemberType>{}, name, std::forward<TReadFunction>(readFunction), std::forward<TWriteFunction>(writeFunction));
     }
 
     /**
@@ -458,9 +458,9 @@ public:
      * @param readFunction   Function of type "TVarType (const TObject&)"
      */
     template<typename TObject, typename TVarType, typename TReadFunction>
-    void registerMember(const std::string& name, TReadFunction readFunction)
+    void registerMember(const std::string& name, TReadFunction&& readFunction)
     {
-        registerMemberImpl<TObject,TVarType>(name, std::move(readFunction));
+        registerMemberImpl<TObject,TVarType>(name, std::forward<TReadFunction>(readFunction));
     }
 
     /**
@@ -471,10 +471,10 @@ public:
      * @param readFunction   Function of type "TVarType (const TObject&)"
      */
     template<typename TMemberType, typename TReadFunction>
-    void registerMember(const std::string& name, TReadFunction readFunction)
+    void registerMember(const std::string& name, TReadFunction&& readFunction)
     {
         static_assert(std::is_member_object_pointer<TMemberType>::value, "registerMember must take a member object pointer type as template parameter");
-        registerMemberImpl(tag<TMemberType>{}, name, std::move(readFunction));
+        registerMemberImpl(tag<TMemberType>{}, name, std::forward<TReadFunction>(readFunction));
     }
 
     /**
@@ -486,9 +486,9 @@ public:
      * @param writeFunction  Function of type "void (TObject&, const std::string&, const TVarType&)"
      */
     template<typename TObject, typename TVarType, typename TReadFunction, typename TWriteFunction>
-    void registerMember(TReadFunction readFunction, TWriteFunction writeFunction)
+    void registerMember(TReadFunction&& readFunction, TWriteFunction&& writeFunction)
     {
-        registerMemberImpl<TObject,TVarType>(std::move(readFunction), std::move(writeFunction));
+        registerMemberImpl<TObject,TVarType>(std::forward<TReadFunction>(readFunction), std::forward<TWriteFunction>(writeFunction));
     }
 
     /**
@@ -499,10 +499,10 @@ public:
      * @param writeFunction  Function of type "void (TObject&, const std::string&, const TVarType&)"
      */
     template<typename TMemberType, typename TReadFunction, typename TWriteFunction>
-    void registerMember(TReadFunction readFunction, TWriteFunction writeFunction)
+    void registerMember(TReadFunction&& readFunction, TWriteFunction&& writeFunction)
     {
         static_assert(std::is_member_object_pointer<TMemberType>::value, "registerMember must take a member object pointer type as template parameter");
-        registerMemberImpl(tag<TMemberType>{}, std::move(readFunction), std::move(writeFunction));
+        registerMemberImpl(tag<TMemberType>{}, std::forward<TReadFunction>(readFunction), std::forward<TWriteFunction>(writeFunction));
     }
 
     /**
@@ -513,9 +513,9 @@ public:
      * @param readFunction   Function of type "TVarType (const TObject&, const std::string&)"
      */
     template<typename TObject, typename TVarType, typename TReadFunction>
-    void registerMember(TReadFunction readFunction)
+    void registerMember(TReadFunction&& readFunction)
     {
-        registerMemberImpl<TObject, TVarType>(std::move(readFunction));
+        registerMemberImpl<TObject, TVarType>(std::forward<TReadFunction>(readFunction));
     }
 
     /**
@@ -525,10 +525,10 @@ public:
      * @param readFunction   Function of type "TVarType (const TObject&, const std::string&)"
      */
     template<typename TMemberType, typename TReadFunction>
-    void registerMember(TReadFunction readFunction)
+    void registerMember(TReadFunction&& readFunction)
     {
         static_assert(std::is_member_object_pointer<TMemberType>::value, "registerMember must take a member object pointer type as template parameter");
-        registerMemberImpl(tag<TMemberType>{}, std::move(readFunction));
+        registerMemberImpl(tag<TMemberType>{}, std::forward<TReadFunction>(readFunction));
     }
 
     /**
@@ -1072,27 +1072,27 @@ private:
     }
 
     template<typename TFunctionType, typename TRetValue, typename TObject, typename... TOtherParams>
-    void registerFunctionImpl(const std::string& functionName, TFunctionType function, tag<TRetValue (TObject::*)(TOtherParams...)>)
+    void registerFunctionImpl(const std::string& functionName, TFunctionType&& function, tag<TRetValue (TObject::*)(TOtherParams...)>)
     {
-        registerFunctionImpl(functionName, std::move(function), tag<TObject>{}, tag<TRetValue (TOtherParams...)>{});
+        registerFunctionImpl(functionName, std::forward<TFunctionType>(function), tag<TObject>{}, tag<TRetValue (TOtherParams...)>{});
     }
 
     template<typename TFunctionType, typename TRetValue, typename TObject, typename... TOtherParams>
-    void registerFunctionImpl(const std::string& functionName, TFunctionType function, tag<TRetValue (TObject::*)(TOtherParams...) const>)
+    void registerFunctionImpl(const std::string& functionName, TFunctionType&& function, tag<TRetValue (TObject::*)(TOtherParams...) const>)
     {
-        registerFunctionImpl(functionName, std::move(function), tag<const TObject>{}, tag<TRetValue (TOtherParams...)>{});
+        registerFunctionImpl(functionName, std::forward<TFunctionType>(function), tag<const TObject>{}, tag<TRetValue (TOtherParams...)>{});
     }
 
     template<typename TFunctionType, typename TRetValue, typename TObject, typename... TOtherParams>
-    void registerFunctionImpl(const std::string& functionName, TFunctionType function, tag<TRetValue (TObject::*)(TOtherParams...) volatile>)
+    void registerFunctionImpl(const std::string& functionName, TFunctionType&& function, tag<TRetValue (TObject::*)(TOtherParams...) volatile>)
     {
-        registerFunctionImpl(functionName, std::move(function), tag<TObject>{}, tag<TRetValue (TOtherParams...)>{});
+        registerFunctionImpl(functionName, std::forward<TFunctionType>(function), tag<TObject>{}, tag<TRetValue (TOtherParams...)>{});
     }
 
     template<typename TFunctionType, typename TRetValue, typename TObject, typename... TOtherParams>
-    void registerFunctionImpl(const std::string& functionName, TFunctionType function, tag<TRetValue (TObject::*)(TOtherParams...) const volatile>)
+    void registerFunctionImpl(const std::string& functionName, TFunctionType&& function, tag<TRetValue (TObject::*)(TOtherParams...) const volatile>)
     {
-        registerFunctionImpl(functionName, std::move(function), tag<const TObject>{}, tag<TRetValue (TOtherParams...)>{});
+        registerFunctionImpl(functionName, std::forward<TFunctionType>(function), tag<const TObject>{}, tag<TRetValue (TOtherParams...)>{});
     }
 
     // the "registerMember" public functions call this one
@@ -1152,20 +1152,20 @@ private:
     }
 
     template<typename TObject, typename TVarType, typename TReadFunction, typename TWriteFunction>
-    void registerMemberImpl(tag<TVarType (TObject::*)>, const std::string& name, TReadFunction readFunction, TWriteFunction writeFunction)
+    void registerMemberImpl(tag<TVarType (TObject::*)>, const std::string& name, TReadFunction&& readFunction, TWriteFunction&& writeFunction)
     {
-        registerMemberImpl<TObject,TVarType>(name, std::move(readFunction), std::move(writeFunction));
+        registerMemberImpl<TObject,TVarType>(name, std::forward<TReadFunction>(readFunction), std::forward<TWriteFunction>(writeFunction));
     }
 
     template<typename TObject, typename TVarType, typename TReadFunction>
-    void registerMemberImpl(tag<TVarType(TObject::*)>, const std::string& name, TReadFunction readFunction)
+    void registerMemberImpl(tag<TVarType(TObject::*)>, const std::string& name, TReadFunction&& readFunction)
     {
-        registerMemberImpl<TObject, TVarType>(name, std::move(readFunction));
+        registerMemberImpl<TObject, TVarType>(name, std::forward<TReadFunction>(readFunction));
     }
 
     // the "registerMember" public functions call this one
     template<typename TObject, typename TVarType, typename TReadFunction>
-    void registerMemberImpl(TReadFunction readFunction)
+    void registerMemberImpl(const TReadFunction& readFunction)
     {
         checkTypeRegistration(mState, &typeid(TObject));
         setTable<TVarType (TObject const&, std::string)>(mState, Registry, &typeid(TObject), 2, [readFunction](TObject const& object, const std::string& name) {
@@ -1198,9 +1198,9 @@ private:
     }
 
     template<typename TObject, typename TVarType, typename TReadFunction, typename TWriteFunction>
-    void registerMemberImpl(TReadFunction readFunction, TWriteFunction writeFunction)
+    void registerMemberImpl(TReadFunction&& readFunction, const TWriteFunction& writeFunction)
     {
-        registerMemberImpl<TObject,TVarType>(readFunction);
+        registerMemberImpl<TObject,TVarType>(std::forward<TReadFunction>(readFunction));
 
         setTable<void (TObject&, std::string, TVarType)>(mState, Registry, &typeid(TObject), 5, [writeFunction](TObject& object, const std::string& name, const TVarType& value) {
             writeFunction(object, name, value);
@@ -1218,15 +1218,15 @@ private:
     }
 
     template<typename TObject, typename TVarType, typename TReadFunction, typename TWriteFunction>
-    void registerMemberImpl(tag<TVarType (TObject::*)>, TReadFunction readFunction, TWriteFunction writeFunction)
+    void registerMemberImpl(tag<TVarType (TObject::*)>, TReadFunction&& readFunction, TWriteFunction&& writeFunction)
     {
-        registerMemberImpl<TObject,TVarType>(std::move(readFunction), std::move(writeFunction));
+        registerMemberImpl<TObject,TVarType>(std::forward<TReadFunction>(readFunction), std::forward<TWriteFunction>(writeFunction));
     }
 
     template<typename TObject, typename TVarType, typename TReadFunction>
-    void registerMemberImpl(tag<TVarType(TObject::*)>, TReadFunction readFunction)
+    void registerMemberImpl(tag<TVarType(TObject::*)>, TReadFunction&& readFunction)
     {
-        registerMemberImpl<TObject, TVarType>(std::move(readFunction));
+        registerMemberImpl<TObject, TVarType>(std::forward<TReadFunction>(readFunction));
     }
     
 
@@ -1614,7 +1614,7 @@ private:
         if (!firstElem)
             throw WrongTypeException(lua_typename(state, lua_type(state, index)), typeid(TFirstType));
 
-        Binder<TCallback, const TFirstType&> binder{ callback, *firstElem };
+        Binder<TCallback, const TFirstType> binder{ callback, *firstElem };
         return readIntoFunction(state, retValueTag, binder, index + 1, othersTags...);
     }
     template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes>
@@ -1628,7 +1628,7 @@ private:
         if (!firstElem)
             throw WrongTypeException(lua_typename(state, lua_type(state, index)), typeid(TFirstType));
 
-        Binder<TCallback, const TFirstType&> binder{ callback, *firstElem };
+        Binder<TCallback, const TFirstType> binder{ callback, *firstElem };
         return readIntoFunction(state, retValueTag, binder, index + 1, othersTags...);
     }
 
@@ -2105,7 +2105,7 @@ struct LuaContext::Pusher<TReturnType (TParameters...)>
         // lua_newuserdata allocates memory in the internals of the lua library and returns it so we can fill it
         //   and that's what we do with placement-new
         const auto functionLocation = static_cast<TFunctionObject*>(lua_newuserdata(state, sizeof(TFunctionObject)));
-        new (functionLocation) TFunctionObject(std::move(fn));
+        new (functionLocation) TFunctionObject(std::move(fn)); // TODO: move should be forward, decay<TFunctionObject> above
 
         // creating the metatable (over the object on the stack)
         // lua_settable pops the key and value we just pushed, so stack management is easy
@@ -2148,7 +2148,7 @@ struct LuaContext::Pusher<TReturnType (TParameters...)>
 
         // we copy the function object onto the stack
         const auto functionObjectLocation = static_cast<TFunctionObject*>(lua_newuserdata(state, sizeof(TFunctionObject)));
-        new (functionObjectLocation) TFunctionObject(std::move(fn));
+        new (functionObjectLocation) TFunctionObject(std::move(fn)); // TODO: move should be forward, decay<TFunctionObject> above
 
         // pushing the function with the function object as upvalue
         lua_pushcclosure(state, function, 1);
