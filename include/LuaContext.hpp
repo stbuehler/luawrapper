@@ -145,7 +145,7 @@ public:
     class ExecutionErrorException : public std::runtime_error
     {
     public:
-        ExecutionErrorException(const std::string& msg) :
+        explicit ExecutionErrorException(const std::string& msg) :
             std::runtime_error(msg)
         {
         }
@@ -157,7 +157,7 @@ public:
     class SyntaxErrorException : public std::runtime_error
     {
     public:
-        SyntaxErrorException(const std::string& msg) :
+        explicit SyntaxErrorException(const std::string& msg) :
             std::runtime_error(msg)
         {
         }
@@ -169,7 +169,7 @@ public:
     class WrongTypeException : public std::runtime_error
     {
     public:
-        WrongTypeException(std::string luaType, const std::type_info& destination) :
+        explicit WrongTypeException(std::string luaType, const std::type_info& destination) :
             std::runtime_error("Trying to cast a lua variable from \"" + luaType + "\" to \"" + destination.name() + "\""),
             luaType(luaType),
             destination(destination)
@@ -680,7 +680,7 @@ private:
     /*                 PUSH OBJECT                    */
     /**************************************************/
     struct PushedObject {
-        PushedObject(lua_State* state, int num = 1) : state(state), num(num) {}
+        explicit PushedObject(lua_State* state, int num = 1) : state(state), num(num) {}
         ~PushedObject() { assert(lua_gettop(state) >= num); if (num >= 1) lua_pop(state, num); }
         
         PushedObject& operator=(const PushedObject&) = delete;
@@ -1240,7 +1240,7 @@ private:
         // the Reader structure is at the same time an object storing an istream and a buffer,
         //   and a static function provider
         struct Reader {
-            Reader(std::istream& str) : stream(str) {}
+            explicit Reader(std::istream& str) : stream(str) {}
             std::istream&           stream;
             std::array<char,512>    buffer;
 
@@ -1639,7 +1639,7 @@ private:
     // structure that will ensure that a certain value is stored somewhere in the registry
     struct ValueInRegistry {
         // this constructor will clone and hold the value at the specified index (or by default at the top of the stack) in the registry
-        ValueInRegistry(lua_State* lua, int index=-1) : lua{lua}
+        explicit ValueInRegistry(lua_State* lua, int index=-1) : lua{lua}
         {
             lua_pushlightuserdata(lua, this);
             lua_pushvalue(lua, -1 + index);
@@ -2320,7 +2320,7 @@ private:
             obj = Pusher<typename std::decay<TType>::type>::push(state, std::move(value));
         }
 
-        VariantWriter(lua_State* state, PushedObject& obj) : state(state), obj(obj) {}
+        explicit VariantWriter(lua_State* state, PushedObject& obj) : state(state), obj(obj) {}
         lua_State* state;
         PushedObject& obj;
     };
