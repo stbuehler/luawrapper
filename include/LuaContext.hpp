@@ -2306,23 +2306,20 @@ struct LuaContext::Pusher<boost::variant<TTypes...>>
     static const int maxSize = PusherMaxSize<TTypes...>::size;
 
     static PushedObject push(lua_State* state, const boost::variant<TTypes...>& value) noexcept {
-        PushedObject obj{state, 0};
-        VariantWriter writer{state, obj};
-        value.apply_visitor(writer);
-        return obj;
+        VariantWriter writer{state};
+        return value.apply_visitor(writer);
     }
 
 private:
-    struct VariantWriter : public boost::static_visitor<> {
+    struct VariantWriter : public boost::static_visitor<PushedObject> {
         template<typename TType>
-        void operator()(TType value) noexcept
+        PushedObject operator()(TType const& value) noexcept
         {
-            obj = Pusher<typename std::decay<TType>::type>::push(state, std::move(value));
+            return Pusher<typename std::decay<TType>::type>::push(state, value);
         }
 
-        explicit VariantWriter(lua_State* state, PushedObject& obj) : state(state), obj(obj) {}
+        explicit VariantWriter(lua_State* state) : state(state) {}
         lua_State* state;
-        PushedObject& obj;
     };
 };
 
