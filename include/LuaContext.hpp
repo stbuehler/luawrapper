@@ -2526,11 +2526,11 @@ struct LuaContext::Reader<std::function<TRetValue (TParameters...)>>
     static auto read(lua_State* state, int index)
         -> boost::optional<std::function<TRetValue (TParameters...)>>
     {
-		if (auto val = Reader<LuaContext::LuaFunctionCaller<TRetValue (TParameters...)>>::read(state, index))
-		{
-			std::function<TRetValue (TParameters...)> f{*val};
-			return boost::optional<std::function<TRetValue (TParameters...)>>{std::move(f)};
-		}
+        if (auto val = Reader<LuaContext::LuaFunctionCaller<TRetValue (TParameters...)>>::read(state, index))
+        {
+            std::function<TRetValue (TParameters...)> f{*val};
+            return boost::optional<std::function<TRetValue (TParameters...)>>{std::move(f)};
+        }
 
         return boost::none;
     }
@@ -2673,8 +2673,8 @@ struct LuaContext::Reader<boost::optional<TType>>
 template<typename... TTypes>
 struct LuaContext::Reader<boost::variant<TTypes...>>
 {
-	typedef boost::variant<TTypes...>
-		ReturnType;
+    typedef boost::variant<TTypes...>
+        ReturnType;
 
 private:
     // class doing operations for a range of types from TIterBegin to TIterEnd
@@ -2736,8 +2736,8 @@ struct LuaContext::Reader<std::tuple<TFirst, TOthers...>,
 {
     // this is the "TFirst is NOT default constructible" version
 
-	typedef std::tuple<TFirst, TOthers...>
-		ReturnType;
+    typedef std::tuple<TFirst, TOthers...>
+        ReturnType;
 
     static auto read(lua_State* state, int index, int maxSize = std::tuple_size<ReturnType>::value)
         -> boost::optional<ReturnType>
@@ -2761,10 +2761,10 @@ struct LuaContext::Reader<std::tuple<TFirst, TOthers...>,
     >
 {
     // this is the "TFirst is default-constructible" version
-	
-	typedef std::tuple<TFirst, TOthers...>
-		ReturnType;
-    
+
+    typedef std::tuple<TFirst, TOthers...>
+        ReturnType;
+
     static auto read(lua_State* state, int index, int maxSize = std::tuple_size<ReturnType>::value)
         -> boost::optional<ReturnType>
     {
