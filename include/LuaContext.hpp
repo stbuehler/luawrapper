@@ -1606,11 +1606,11 @@ private:
         -> typename std::enable_if<IsOptional<TFirstType>::value, TRetValue>::type
     {
         if (index >= 0) {
-            Binder<TCallback, const TFirstType&> binder{ callback, {} };
+            Binder<TCallback, const TFirstType> binder{ callback, {} };
             return readIntoFunction(state, retValueTag, binder, index + 1, othersTags...);
         }
 
-        const auto& firstElem = Reader<typename std::decay<TFirstType>::type>::read(state, index);
+        const auto firstElem = Reader<typename std::decay<TFirstType>::type>::read(state, index);
         if (!firstElem)
             throw WrongTypeException(lua_typename(state, lua_type(state, index)), typeid(TFirstType));
 
@@ -1624,7 +1624,7 @@ private:
         if (index >= 0)
             throw std::logic_error("Wrong number of parameters");
 
-        const auto& firstElem = Reader<typename std::decay<TFirstType>::type>::read(state, index);
+        const auto firstElem = Reader<typename std::decay<TFirstType>::type>::read(state, index);
         if (!firstElem)
             throw WrongTypeException(lua_typename(state, lua_type(state, index)), typeid(TFirstType));
 
