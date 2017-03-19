@@ -561,7 +561,7 @@ And this helper function:
 ### Compilation
 This code uses new functionalities from [C++11](http://en.wikipedia.org/wiki/C%2B%2B11).
 
-[![build status](https://secure.travis-ci.org/Tomaka17/luawrapper.png)](http://travis-ci.org/Tomaka17/luawrapper)
+[![build status](https://secure.travis-ci.org/PowerDNS/luawrapper.png)](http://travis-ci.org/PowerDNS/luawrapper)
 
 Does it compile on:
   * Visual C++ 2012 or below: no
