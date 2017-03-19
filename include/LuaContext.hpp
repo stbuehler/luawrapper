@@ -197,7 +197,7 @@ public:
         ThreadID& operator=(ThreadID&& o) { std::swap(state, o.state); std::swap(threadInRegistry, o.threadInRegistry); return *this; }
     public:
         friend LuaContext;
-        lua_State* state;
+        lua_State* state = nullptr;
         std::unique_ptr<ValueInRegistry> threadInRegistry;
     };
 
