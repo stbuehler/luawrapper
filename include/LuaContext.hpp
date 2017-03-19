@@ -690,11 +690,13 @@ private:
 
         PushedObject operator+(PushedObject&& other) && { PushedObject obj(state, num + other.num); num = 0; other.num = 0; return obj; }
         void operator+=(PushedObject&& other) { assert(state == other.state); num += other.num; other.num = 0; }
+        void operator+=(int n) { num += n; }
 
         auto getState() const -> lua_State* { return state; }
         auto getNum() const -> int { return num; }
 
         int release() { const auto n = num; num = 0; return n; }
+        int release(int n) { const auto r = num; assert(num >= n); num -= n; return r; }
         void pop() { if (num >= 1) lua_pop(state, num); num = 0; }
         void pop(int n) { assert(num >= n); lua_pop(state, n); num -= n; }
 
@@ -713,272 +715,404 @@ private:
 
     // tag for "the registry"
     enum RegistryTag { Registry };
+    // tag for "table on top of stack"
+    enum TopTag { Top };
+
+    // "Index" API:
+    // - int current_index(int new_stack_elements) const:
+    //   returns the current index, assuming new_stack_elements were
+    //   pushed to the stack since the index was created
+    // - void forget(lua_State* state, int new_stack_elements, PushedObject& pushed_objects) const
+    //   removes the value at the index from the stack if possible,
+    //   assuming new_stack_elements were pushed to the stack since the
+    //   index was created, and pushed_objects accounts for all of them
+    //   and the index.
+
+    class RelativeStackIndex {
+    public:
+        explicit RelativeStackIndex(int ndx)
+        : index(ndx) { }
+
+        int current_index(int new_stack_elements) const {
+            return index - new_stack_elements;
+        }
+
+        void forget(lua_State* state, int new_stack_elements, PushedObject& pushed_objects) const {
+            if (-1 == index && pushed_objects.getNum() > new_stack_elements) {
+                // was on top before new_stack_elements values were
+                // pushed, and pushed_objects accounts for all of them
+                // and itself
+                lua_remove(state, this->current_index(new_stack_elements));
+                pushed_objects.release(1);
+            }
+        }
+
+    private:
+        int index;
+    };
+
+    class AbsoluteIndex {
+    public:
+        explicit AbsoluteIndex(int ndx)
+        : index(ndx) { }
+
+        int current_index(int /* new_stack_elements */) const {
+            return index;
+        }
+
+        // not on the stack, no need to drop it
+        void forget(lua_State*, int, PushedObject&) const {
+        }
+    private:
+        int index;
+    };
+
+
+    // table API:
+    // - static void setfield(lua_State* state, const char* index, PushedObject& pushed_objects):
+    //   set t[index] = value, where value is at index `-1`.
+    //   expected to "eat" value, decrements pushed_objects accordingly.
+    // - static void loadsubtable(lua_State* state, const char* index, PushedObject& pushed_objects)
+    //   load sub table at t[index] to top, increments pushed_objects
+    // - static Index loadtable(lua_State* state, PushedObject& pushed_objects)
+    //   load table itself at some index; return index.
+    //   increments pushed_objects if a new value was pushed to the stack
+
+    // table is at index `-1` (before the value is pushed)
+    struct TopTable {
+        static void setfield(lua_State* state, const char* index, PushedObject& pushed_objects) {
+            lua_setfield(state, -2, index);
+            pushed_objects.release(1);
+        }
+
+        static void loadsubtable(lua_State* state, const char* index, PushedObject& pushed_objects) {
+            lua_getfield(state, -1, index);
+            pushed_objects += 1;
+        }
+
+        static RelativeStackIndex loadtable(lua_State*, PushedObject&) {
+            // table is already at the top
+            return RelativeStackIndex(-1);
+        }
+    };
+
+    struct RegistryTable {
+        static void setfield(lua_State* state, const char* index, PushedObject& pushed_objects) {
+            lua_setfield(state, LUA_REGISTRYINDEX, index);
+            pushed_objects.release(1);
+        }
+
+        static void loadsubtable(lua_State* state, const char* index, PushedObject& pushed_objects) {
+            lua_getfield(state, LUA_REGISTRYINDEX, index);
+            pushed_objects += 1;
+        }
+
+        static AbsoluteIndex loadtable(lua_State*, PushedObject&) {
+            // at fixed index
+            return AbsoluteIndex(LUA_REGISTRYINDEX);
+        }
+    };
+
+    struct GlobalsTable {
+        static void setfield(lua_State* state, const char* index, PushedObject& pushed_objects) {
+            lua_setglobal(state, index);
+            pushed_objects.release(1);
+        }
+
+        static void loadsubtable(lua_State* state, const char* index, PushedObject& pushed_objects) {
+            lua_getglobal(state, index);
+            pushed_objects += 1;
+        }
+
+#if LUA_VERSION_NUM >= 502
+        static RelativeStackIndex loadtable(lua_State* state, PushedObject& pushed_objects) {
+            // load table on top
+            lua_pushglobaltable(state);
+            pushed_objects += 1;
+            return RelativeStackIndex(-1);
+        }
+#else
+        static AbsoluteIndex loadtable(lua_State*, PushedObject&) {
+            // at fixed index
+            return AbsoluteIndex(LUA_GLOBALSINDEX);
+        }
+#endif
+    };
+
+    // handle generic index type
+    template<typename TDataType, typename Table, typename TIndex, typename TData>
+    static void setTableNested(lua_State* state, Table, PushedObject& pushed_objects, TIndex&& index, TData&& data) noexcept
+    {
+        static_assert(Pusher<typename std::decay<TIndex>::type>::minSize == 1 && Pusher<typename std::decay<TIndex>::type>::maxSize == 1, "Impossible to have a multiple-values index");
+        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
+
+        auto table_ndx = Table::loadtable(state, pushed_objects);
+
+        auto p1 = Pusher<typename std::decay<TIndex>::type>::push(state, index);
+        auto p2 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
+
+        lua_settable(state, table_ndx.current_index(2));
+        p1.release();
+        p2.release();
+    }
+
+    // handle const char*
+    template<typename TDataType, typename Table, typename TData>
+    static void setTableNested(lua_State* state, Table, PushedObject& pushed_objects, const char* index, TData&& data) noexcept
+    {
+        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
+
+        auto p_data = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
+        Table::setfield(state, index, p_data);
+    }
+
+    // handle metatable as index
+    template<typename TDataType, typename Table, typename TData>
+    static void setTableNested(lua_State* state, Table, PushedObject& pushed_objects, Metatable_t, TData&& data) noexcept
+    {
+        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
+
+        auto table_ndx = Table::loadtable(state, pushed_objects);
+
+        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
+
+        lua_setmetatable(state, table_ndx.current_index(1));
+        p1.release();
+    }
+
+    // handle generic index type
+    template<typename TDataType, typename Table, typename TIndex, typename TNextIndex, typename TFirstParam, typename... TParams>
+    static void setTableNested(lua_State* state, Table, PushedObject& pushed_objects, TIndex&& index, TNextIndex&& next_index, TFirstParam&& first_param, TParams&&... params) noexcept
+    {
+        static_assert(Pusher<typename std::decay<TIndex>::type>::minSize == 1 && Pusher<typename std::decay<TIndex>::type>::maxSize == 1, "Impossible to have a multiple-values index");
+
+        auto table_ndx = Table::loadtable(state, pushed_objects);
+
+        pushed_objects += Pusher<typename std::decay<TIndex>::type>::push(state, index);
+
+        lua_gettable(state, table_ndx.current_index(1));
+        table_ndx.forget(state, 1, pushed_objects);
+
+        setTableNested<TDataType>(
+            state, TopTable{}, pushed_objects,
+            std::forward<TNextIndex>(next_index),
+            std::forward<TFirstParam>(first_param),
+            std::forward<TParams>(params)...);
+    }
+
+    // handle const char*
+    template<typename TDataType, typename Table, typename TNextIndex, typename TFirstParam, typename... TParams>
+    static void setTableNested(lua_State* state, Table, PushedObject& pushed_objects, const char* index, TNextIndex&& next_index, TFirstParam&& first_param, TParams&&... params) noexcept
+    {
+        Table::loadsubtable(state, index, pushed_objects);
+
+        setTableNested<TDataType>(
+            state, TopTable{}, pushed_objects,
+            std::forward<TNextIndex>(next_index),
+            std::forward<TFirstParam>(first_param),
+            std::forward<TParams>(params)...);
+    }
+
+    // handle metatable as index
+    template<typename TDataType, typename Table, typename TNextIndex, typename TFirstParam, typename... TParams>
+    static void setTableNested(lua_State* state, Table, PushedObject& pushed_objects, Metatable_t, TNextIndex&& next_index, TFirstParam&& first_param, TParams&&... params) noexcept
+    {
+        auto table_ndx = Table::loadtable(state, pushed_objects);
+
+        if (lua_getmetatable(state, table_ndx.current_index(0)) == 0)
+        {
+            lua_newtable(state);
+            PushedObject p_new_table{state, 1};
+
+            {
+                // drop all temporaries after nested operation
+                PushedObject p_nested{state, 0};
+
+                setTableNested<TDataType>(
+                    state, TopTable{}, p_nested,
+                    std::forward<TNextIndex>(next_index),
+                    std::forward<TFirstParam>(first_param),
+                    std::forward<TParams>(params)...);
+            }
+
+            // only the new table should be above the target table
+            lua_setmetatable(state, table_ndx.current_index(1));
+            p_new_table.release();
+        }
+        else
+        {
+            pushed_objects += 1;
+            table_ndx.forget(state, 1, pushed_objects);
+
+            setTableNested<TDataType>(
+                state, TopTable{}, pushed_objects,
+                std::forward<TNextIndex>(next_index),
+                std::forward<TFirstParam>(first_param),
+                std::forward<TParams>(params)...);
+        }
+    }
+
+    // equivalent to t[k1][k2][k3] = v, where
+    // - t is either the value on the top of the stack (`Top`), the
+    //   registry (`Registry`) or the globals table (`Globals`)
+    // - k1, k2, ... are the indices (all params but the first two and
+    //   the last one)
+    // - v is the last parameter
+
+    template<typename TDataType, typename... TParams>
+    static void setTable(lua_State* state, TopTag, TParams&&... params) noexcept
+    {
+        PushedObject tmp_objects{state, 0};
+
+        setTableNested<TDataType>(
+            state, TopTable{}, tmp_objects,
+            std::forward<TParams>(params)...);
+    }
+
+    template<typename TDataType, typename... TParams>
+    static void setTable(lua_State* state, RegistryTag, TParams&&... params) noexcept
+    {
+        PushedObject tmp_objects{state, 0};
+
+        setTableNested<TDataType>(
+            state, RegistryTable{}, tmp_objects,
+            std::forward<TParams>(params)...);
+    }
+
+    template<typename TDataType, typename... TParams>
+    static void setTable(lua_State* state, Globals_t, TParams&&... params) noexcept
+    {
+        PushedObject tmp_objects{state, 0};
+
+        setTableNested<TDataType>(
+            state, GlobalsTable{}, tmp_objects,
+            std::forward<TParams>(params)...);
+    }
+
+
+
+    // nested table lookup: in the end the data must be on top, and the
+    // data must not be counted in pushed_objects. intermediate tables
+    // should be removed asap to reduce stack usage.
+
+    // handle result
+    template<typename Table>
+    static void _getTableNested(lua_State* state, Table, PushedObject& pushed_objects) noexcept
+    {
+        auto table_ndx = Table::loadtable(state, pushed_objects);
+        if (table_ndx.current_index(0) == -1 && pushed_objects.getNum() > 0) {
+            // on top, this is the result now
+            pushed_objects.release(1);
+        } else {
+            // copy to top
+            lua_pushvalue(state, table_ndx.current_index(0));
+        }
+    }
+
+    // handle generic index type
+    template<typename Table, typename TIndex, typename... TIndices>
+    static void _getTableNested(lua_State* state, Table, PushedObject& pushed_objects, TIndex&& index, TIndices&&... indices) noexcept
+    {
+        static_assert(Pusher<typename std::decay<TIndex>::type>::minSize == 1 && Pusher<typename std::decay<TIndex>::type>::maxSize == 1, "Impossible to have a multiple-values index");
+
+        auto table_ndx = Table::loadtable(state, pushed_objects);
+
+        pushed_objects += Pusher<typename std::decay<TIndex>::type>::push(state, index);
+
+        lua_gettable(state, table_ndx.current_index(1));
+        table_ndx.forget(state, 1, pushed_objects);
+
+        _getTableNested(
+            state, TopTable{}, pushed_objects,
+            std::forward<TIndices>(indices)...);
+    }
+
+    // handle const char*
+    template<typename Table, typename... TIndices>
+    static void _getTableNested(lua_State* state, Table, PushedObject& pushed_objects, const char* index, TIndices&&... indices) noexcept
+    {
+        Table::loadsubtable(state, index, pushed_objects);
+
+        _getTableNested(
+            state, TopTable{}, pushed_objects,
+            std::forward<TIndices>(indices)...);
+    }
+
+    // handle metatable as index
+    template<typename Table, typename... TIndices>
+    static void _getTableNested(lua_State* state, Table, PushedObject& pushed_objects, Metatable_t, TIndices&&... indices) noexcept
+    {
+        auto table_ndx = Table::loadtable(state, pushed_objects);
+
+        if (lua_getmetatable(state, table_ndx.current_index(0)) == 0)
+        {
+            lua_pushnil(state);
+        }
+        else
+        {
+            pushed_objects += 1;
+            table_ndx.forget(state, 1, pushed_objects);
+
+            _getTableNested(
+                state, TopTable{}, pushed_objects,
+                std::forward<TIndices>(indices)...);
+        }
+    }
+
+    template<typename Table, typename... TIndices>
+    static void getTableNested(lua_State* state, Table table, PushedObject pushed_objects, TIndices&&... indices) noexcept
+    {
+        _getTableNested(
+            state, table, pushed_objects,
+            std::forward<TIndices>(indices)...);
+        // on the top of the stack is the result. drop temporaries below it.
+        for (int i = 0; i < pushed_objects.release(); ++i) {
+            lua_remove(state, -2);
+        }
+    }
+
+
+    // equivalent to t[k1][k2][k3], where
+    // - t is either the value on the top of the stack (`Top`), the
+    //   registry (`Registry`) or the globals table (`Globals`)
+    // - k1, k2, ... are the indices (all params but the first two)
+    // in the end only the looked up value should be "new" on the stack.
+
+    template<typename... TIndices>
+    static void getTable(lua_State* state, TopTag, TIndices&&... indices) noexcept
+    {
+        getTableNested(
+            state, TopTable{}, PushedObject{state, 0},
+            std::forward<TIndices>(indices)...);
+    }
+
+    template<typename... TIndices>
+    static void getTable(lua_State* state, RegistryTag, TIndices&&... indices) noexcept
+    {
+        getTableNested(
+            state, RegistryTable{}, PushedObject{state, 0},
+            std::forward<TIndices>(indices)...);
+    }
+
+    template<typename... TIndices>
+    static void getTable(lua_State* state, Globals_t, TIndices&&... indices) noexcept
+    {
+        getTableNested(
+            state, GlobalsTable{}, PushedObject{state, 0},
+            std::forward<TIndices>(indices)...);
+    }
+
 
     // this function takes a value representing the offset to look into
-    // it will look into the top element of the stack and replace the element by its content at the given index
-    template<typename OffsetType1, typename... OffsetTypeOthers>
-    static void lookIntoStackTop(lua_State* state, OffsetType1&& offset1, OffsetTypeOthers&&... offsetOthers) {
-        static_assert(Pusher<typename std::decay<OffsetType1>::type>::minSize == 1 && Pusher<typename std::decay<OffsetType1>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-        auto p1 = Pusher<typename std::decay<OffsetType1>::type>::push(state, offset1);
-        lua_gettable(state, -2);
-        lua_remove(state, -2);
-        p1.release();
-
-        lookIntoStackTop(state, std::forward<OffsetTypeOthers>(offsetOthers)...);
+    // it will look into the top element of the stack and replace the
+    // element by its content at the given index
+    template<typename... TIndices>
+    static void lookIntoStackTop(lua_State* state, TIndices&&... indices) noexcept {
+        // drops top table afterwards; getTable(state, Top, ...) doesn't do that
+        getTableNested(
+            state, TopTable{}, PushedObject{state, 1},
+            std::forward<TIndices>(indices)...);
     }
-
-    template<typename... OffsetTypeOthers>
-    static void lookIntoStackTop(lua_State* state, Metatable_t, OffsetTypeOthers&&... offsetOthers) {
-        lua_getmetatable(state, -1);
-        lua_remove(state, -2);
-
-        lookIntoStackTop(state, std::forward<OffsetTypeOthers>(offsetOthers)...);
-    }
-
-    static void lookIntoStackTop(lua_State*) {
-    }
-
-    // equivalent of lua_settable with t[k]=n, where t is the value at the index in the template parameter, k is the second parameter, n is the last parameter, and n is pushed by the function in the first parameter
-    // if there are more than 3 parameters, parameters 3 to n-1 are considered as sub-indices into the array
-    // the dataPusher MUST push only one thing on the stack
-    // TTableIndex must be either LUA_REGISTRYINDEX, LUA_GLOBALSINDEX, LUA_ENVINDEX, or the position of the element on the stack
-    template<typename TDataType, typename TIndex, typename TData>
-    static void setTable(lua_State* state, const PushedObject&, TIndex&& index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TIndex>::type>::minSize == 1 && Pusher<typename std::decay<TIndex>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TIndex>::type>::push(state, index);
-        auto p2 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-
-        lua_settable(state, -3);
-        p1.release();
-        p2.release();
-    }
-
-    template<typename TDataType, typename TData>
-    static void setTable(lua_State* state, const PushedObject&, const std::string& index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-        lua_setfield(state, -2, index.c_str());
-        p1.release();
-    }
-
-    template<typename TDataType, typename TData>
-    static void setTable(lua_State* state, const PushedObject&, const char* index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-        lua_setfield(state, -2, index);
-        p1.release();
-    }
-
-    template<typename TDataType, typename TData>
-    static void setTable(lua_State* state, const PushedObject&, Metatable_t, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-        lua_setmetatable(state, -2);
-        p1.release();
-    }
-
-    template<typename TDataType, typename TIndex1, typename TIndex2, typename TIndex3, typename... TIndices>
-    static auto setTable(lua_State* state, PushedObject&, TIndex1&& index1, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-        -> typename std::enable_if<!std::is_same<typename std::decay<TIndex1>::type, Metatable_t>::value>::type
-    {
-        static_assert(Pusher<typename std::decay<TIndex1>::type>::minSize == 1 && Pusher<typename std::decay<TIndex1>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-
-        auto p1 = Pusher<typename std::decay<TIndex1>::type>::push(state, std::forward<TIndex1>(index1));
-        lua_gettable(state, -2);
-
-        setTable<TDataType>(state, std::move(p1), std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-    }
-
-    template<typename TDataType, typename TIndex1, typename TIndex2, typename TIndex3, typename... TIndices>
-    static auto setTable(lua_State* state, PushedObject&& pushedTable, TIndex1&& index1, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-        -> typename std::enable_if<!std::is_same<typename std::decay<TIndex1>::type, Metatable_t>::value>::type
-    {
-        static_assert(Pusher<typename std::decay<TIndex1>::type>::minSize == 1 && Pusher<typename std::decay<TIndex1>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-
-        auto p1 = Pusher<typename std::decay<TIndex1>::type>::push(state, std::forward<TIndex1>(index1)) + std::move(pushedTable);
-        lua_gettable(state, -2);
-
-        setTable<TDataType>(state, std::move(p1), std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-    }
-
-    template<typename TDataType, typename TIndex2, typename TIndex3, typename... TIndices>
-    static void setTable(lua_State* state, PushedObject& pushedObject, Metatable_t, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-    {
-        if (lua_getmetatable(state, -1) == 0)
-        {
-            lua_newtable(state);
-            PushedObject p1{state, 1};
-
-            setTable<TDataType>(state, p1, std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-
-            lua_setmetatable(state, -2);
-            p1.release();
-        }
-        else
-        {
-            setTable<TDataType>(state, pushedObject, std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-        }
-    }
-
-    template<typename TDataType, typename TIndex2, typename TIndex3, typename... TIndices>
-    static void setTable(lua_State* state, PushedObject&& pushedObject, Metatable_t, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-    {
-        if (lua_getmetatable(state, -1) == 0)
-        {
-            lua_newtable(state);
-            PushedObject p1{state, 1};
-
-            setTable<TDataType>(state, p1, std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-
-            lua_setmetatable(state, -2);
-            p1.release();
-        }
-        else
-        {
-            setTable<TDataType>(state, std::move(pushedObject), std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-        }
-    }
-
-    template<typename TDataType, typename TIndex, typename TData>
-    static void setTable(lua_State* state, RegistryTag, TIndex&& index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TIndex>::type>::minSize == 1 && Pusher<typename std::decay<TIndex>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TIndex>::type>::push(state, index);
-        auto p2 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-
-        lua_settable(state, LUA_REGISTRYINDEX);
-        p1.release();
-        p2.release();
-    }
-
-    template<typename TDataType, typename TData>
-    static void setTable(lua_State* state, RegistryTag, const std::string& index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-        lua_setfield(state, LUA_REGISTRYINDEX, index.c_str());
-        p1.release();
-    }
-
-    template<typename TDataType, typename TData>
-    static void setTable(lua_State* state, RegistryTag, const char* index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-        lua_setfield(state, LUA_REGISTRYINDEX, index);
-        p1.release();
-    }
-
-    template<typename TDataType, typename TIndex1, typename TIndex2, typename TIndex3, typename... TIndices>
-    static void setTable(lua_State* state, RegistryTag, TIndex1&& index1, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TIndex1>::type>::minSize == 1 && Pusher<typename std::decay<TIndex1>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-
-        auto p1 = Pusher<typename std::decay<TIndex1>::type>::push(state, std::forward<TIndex1>(index1));
-        lua_gettable(state, LUA_REGISTRYINDEX);
-
-        setTable<TDataType>(state, std::move(p1), std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-    }
-
-    template<typename TDataType, typename TIndex, typename TData>
-    static void setTable(lua_State* state, Globals_t, TIndex&& index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TIndex>::type>::minSize == 1 && Pusher<typename std::decay<TIndex>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-
-#       if LUA_VERSION_NUM >= 502
-
-            lua_pushglobaltable(state);
-            PushedObject p3{state, 1};
-            auto p1 = Pusher<typename std::decay<TIndex>::type>::push(state, index);
-            auto p2 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-            lua_settable(state, -3);
-
-#       else
-
-            auto p1 = Pusher<typename std::decay<TIndex>::type>::push(state, index);
-            auto p2 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-            lua_settable(state, LUA_GLOBALSINDEX);
-
-#       endif
-
-        p1.release();
-        p2.release();
-    }
-
-    template<typename TDataType, typename TData>
-    static void setTable(lua_State* state, Globals_t, const std::string& index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-        lua_setglobal(state, index.c_str());
-        p1.release();
-    }
-
-    template<typename TDataType, typename TData>
-    static void setTable(lua_State* state, Globals_t, const char* index, TData&& data) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TDataType>::type>::minSize == 1 && Pusher<typename std::decay<TDataType>::type>::maxSize == 1, "Impossible to have a multiple-values data");
-
-        auto p1 = Pusher<typename std::decay<TDataType>::type>::push(state, std::forward<TData>(data));
-        lua_setglobal(state, index);
-        p1.release();
-    }
-
-    template<typename TDataType, typename TIndex1, typename TIndex2, typename TIndex3, typename... TIndices>
-    static void setTable(lua_State* state, Globals_t, TIndex1&& index1, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-    {
-        static_assert(Pusher<typename std::decay<TIndex1>::type>::minSize == 1 && Pusher<typename std::decay<TIndex1>::type>::maxSize == 1, "Impossible to have a multiple-values index");
-
-#       if LUA_VERSION_NUM >= 502
-
-            lua_pushglobaltable(state);
-            auto p1 = Pusher<typename std::decay<TIndex1>::type>::push(state, std::forward<TIndex1>(index1)) + PushedObject{state, 1};
-            lua_gettable(state, -2);
-
-#       else
-
-            auto p1 = Pusher<typename std::decay<TIndex1>::type>::push(state, std::forward<TIndex1>(index1));
-            lua_gettable(state, LUA_GLOBALSINDEX);
-
-#       endif
-
-        setTable<TDataType>(state, std::move(p1), std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-    }
-
-    // TODO: g++ reports "ambiguous overload"
-    /*template<typename TDataType, typename TIndex2, typename TIndex3, typename... TIndices>
-    static void setTable(lua_State* state, Globals_t, const char* index, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-    {
-        lua_getglobal(state, index);
-        PushedObject p1{state, 1};
-
-        setTable<TDataType>(state, std::move(p1), std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-    }
-
-    template<typename TDataType, typename TIndex2, typename TIndex3, typename... TIndices>
-    static void setTable(lua_State* state, Globals_t, const std::string& index, TIndex2&& index2, TIndex3&& index3, TIndices&&... indices) noexcept
-    {
-        lua_getglobal(state, index.c_str());
-        PushedObject p1{state, 1};
-
-        setTable<TDataType>(state, std::move(p1), std::forward<TIndex2>(index2), std::forward<TIndex3>(index3), std::forward<TIndices>(indices)...);
-    }*/
 
     // simple function that reads the "nb" first top elements of the stack, pops them, and returns the value
     // warning: first parameter is the number of parameters, not the parameter index
@@ -1007,21 +1141,17 @@ private:
         lua_pushlightuserdata(state, const_cast<std::type_info*>(type));
         lua_newtable(state);
 
-        lua_pushinteger(state, 0);
         lua_newtable(state);
-        lua_settable(state, -3);
+        lua_rawseti(state, -2, 0);
 
-        lua_pushinteger(state, 1);
         lua_newtable(state);
-        lua_settable(state, -3);
+        lua_rawseti(state, -2, 1);
 
         lua_pushinteger(state, 3);
-        lua_newtable(state);
-        lua_settable(state, -3);
+        lua_rawseti(state, -2, 3);
 
-        lua_pushinteger(state, 4);
         lua_newtable(state);
-        lua_settable(state, -3);
+        lua_rawseti(state, -2, 4);
 
         lua_settable(state, LUA_REGISTRYINDEX);
     }
@@ -1963,7 +2093,7 @@ struct LuaContext::Pusher<std::map<TKey,TValue>> {
         auto obj = Pusher<EmptyArray_t>::push(state, EmptyArray);
 
         for (auto i = value.begin(), e = value.end(); i != e; ++i)
-            setTable<TValue>(state, obj, i->first, i->second);
+            setTable<TValue>(state, Top, i->first, i->second);
 
         return obj;
     }
@@ -1982,7 +2112,7 @@ struct LuaContext::Pusher<std::unordered_map<TKey,TValue>> {
         auto obj = Pusher<EmptyArray_t>::push(state, EmptyArray);
 
         for (auto i = value.begin(), e = value.end(); i != e; ++i)
-            setTable<TValue>(state, obj, i->first, i->second);
+            setTable<TValue>(state, Top, i->first, i->second);
 
         return obj;
     }
@@ -2001,7 +2131,7 @@ struct LuaContext::Pusher<std::vector<std::pair<TType1,TType2>>> {
         auto obj = Pusher<EmptyArray_t>::push(state, EmptyArray);
 
         for (auto i = value.begin(), e = value.end(); i != e; ++i)
-            setTable<TType2>(state, obj, i->first, i->second);
+            setTable<TType2>(state, Top, i->first, i->second);
 
         return obj;
     }
@@ -2019,7 +2149,7 @@ struct LuaContext::Pusher<std::vector<TType>> {
         auto obj = Pusher<EmptyArray_t>::push(state, EmptyArray);
 
         for (unsigned int i = 0; i < value.size(); ++i)
-            setTable<TType>(state, obj, i + 1, value[i]);
+            setTable<TType>(state, Top, i + 1, value[i]);
 
         return obj;
     }
