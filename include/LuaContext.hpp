@@ -1617,9 +1617,8 @@ private:
         Binder<TCallback, const TFirstType&> binder{ callback, *firstElem };
         return readIntoFunction(state, retValueTag, binder, index + 1, tag<TTypes...>());
     }
-    template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes>
-    static auto readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType, TTypes...>)
-        -> typename std::enable_if<!IsOptional<TFirstType>::value, TRetValue>::type
+    template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes, typename = typename std::enable_if<!IsOptional<TFirstType>::value>::type>
+    static TRetValue readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType, TTypes...>)
     {
         if (index >= 0)
             throw std::logic_error("Wrong number of parameters");
